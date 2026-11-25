@@ -3,45 +3,89 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+# Each engine is its OWN job (no chain between engines): one failing never skips the others.
 jobs:
-  build:
+  prepare:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
     outputs:
-      tag: ${{ steps.pack.outputs.tag }}
+      tag: ${{ steps.t.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: t
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=engines-${{ github.run_number }}
+          gh release create $TAG --draft --target ${{ github.sha }} --title "Kami AG engines $TAG" --notes "building…"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+  ffmpeg:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v5
       - name: Tools
         run: sudo apt-get update -qq && sudo apt-get install -y -qq nasm pkg-config autoconf automake libtool cmake >/dev/null && echo "NDK=$ANDROID_NDK_LATEST_HOME"
-      - name: ffmpeg + ffprobe
+      - name: Build ffmpeg + ffprobe
         run: bash scripts/build-ffmpeg.sh
-      - name: ImageMagick
-        id: magick
-        continue-on-error: true
-        run: bash scripts/build-magick.sh
-      - name: BusyBox
-        id: busybox
-        continue-on-error: true
-        run: bash scripts/build-busybox.sh
-      - name: Pack + manifest
-        id: pack
-        run: |
-          TAG=engines-${{ github.run_number }}
-          python3 scripts/pack.py build/out $TAG ${{ github.run_number }}
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "magick=${{ steps.magick.outcome }} busybox=${{ steps.busybox.outcome }}"
-          ls -l build/out/dist
-      - name: Release
+      - name: Pack + upload ffmpeg + ffprobe
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG=${{ steps.pack.outputs.tag }}
-          gh release create $TAG build/out/dist/* --title "Kami AG engines $TAG" --notes "arm64-v8a engine packs for Kami AG (downloaded one by one from «ابزارهای محلی و مدل‌ها»). ImageMagick: ${{ steps.magick.outcome }}, BusyBox: ${{ steps.busybox.outcome }}." --latest
+          python3 scripts/pack.py one build/out ${{ needs.prepare.outputs.tag }} ${{ github.run_number }} ffmpeg
+          gh release upload ${{ needs.prepare.outputs.tag }} build/out/dist/*.zip build/out/dist/ffmpeg.entry.json --clobber
+  magick:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v5
+      - name: Tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq nasm pkg-config autoconf automake libtool cmake >/dev/null && echo "NDK=$ANDROID_NDK_LATEST_HOME"
+      - name: Build ImageMagick
+        run: bash scripts/build-magick.sh
+      - name: Pack + upload ImageMagick
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/pack.py one build/out ${{ needs.prepare.outputs.tag }} ${{ github.run_number }} magick
+          gh release upload ${{ needs.prepare.outputs.tag }} build/out/dist/*.zip build/out/dist/magick.entry.json --clobber
+  busybox:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v5
+      - name: Tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq nasm pkg-config autoconf automake libtool cmake >/dev/null && echo "NDK=$ANDROID_NDK_LATEST_HOME"
+      - name: Build BusyBox
+        run: bash scripts/build-busybox.sh
+      - name: Pack + upload BusyBox
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/pack.py one build/out ${{ needs.prepare.outputs.tag }} ${{ github.run_number }} busybox
+          gh release upload ${{ needs.prepare.outputs.tag }} build/out/dist/*.zip build/out/dist/busybox.entry.json --clobber
+  publish:
+    needs: [prepare, ffmpeg, magick, busybox]
+    if: ${{ always() && needs.prepare.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Merge manifest + publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=${{ needs.prepare.outputs.tag }}
+          mkdir m && cd m
+          gh release download $TAG --pattern '*.entry.json' || true
+          python3 ../scripts/pack.py merge . $TAG
+          gh release upload $TAG manifest.json --clobber
+          gh release edit $TAG --draft=false --latest --notes "arm64-v8a engine packs for Kami AG (downloaded one by one from «ابزارهای محلی و مدل‌ها»). ffmpeg: ${{ needs.ffmpeg.result }}, ImageMagick: ${{ needs.magick.result }}, BusyBox: ${{ needs.busybox.result }}."
   smoke:
-    needs: build
+    needs: [prepare, publish]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v5
       - name: Enable KVM
@@ -50,11 +94,11 @@ jobs:
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
       - name: Build smoke runner + fetch packs
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TC=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64
           $TC/bin/aarch64-linux-android26-clang -O2 -o smoke-arm64 smoke/smoke.c -ldl
-          mkdir packs && cd packs && gh release download ${{ needs.build.outputs.tag }} --pattern '*.zip' && for z in *.zip; do unzip -o -q $z; done && ls -l
+          mkdir packs && cd packs && gh release download ${{ needs.prepare.outputs.tag }} --pattern '*.zip' && for z in *.zip; do unzip -o -q $z; done && ls -l
           printf 'P6\n2 2\n255\n' > ../t.ppm; printf '\xff\x00\x00\x00\xff\x00\x00\x00\xff\xff\xff\xff' >> ../t.ppm
       - name: Run on Android emulator (x86_64 image with ARM translation)
         uses: reactivecircus/android-emulator-runner@v2
@@ -63,11 +107,4 @@ jobs:
           target: google_apis
           arch: x86_64
           disable-animations: true
-          script: |
-            adb push smoke-arm64 /data/local/tmp/smoke && adb shell chmod 755 /data/local/tmp/smoke
-            for f in packs/*.so t.ppm; do adb push $f /data/local/tmp/; done
-            adb shell "cd /data/local/tmp && ./smoke ./libffmpeg_engine.so ffmpeg -hide_banner -f lavfi -i sine=d=1 -c:a libmp3lame -y s.mp3; echo rc=\$?; ls -l s.mp3"
-            adb shell "cd /data/local/tmp && ./smoke ./libffprobe_engine.so ffprobe -hide_banner s.mp3; echo rc=\$?"
-            adb shell "cd /data/local/tmp && ./smoke ./libffmpeg_engine.so ffmpeg -hide_banner -f lavfi -i testsrc=d=1:s=320x240 -c:v libx264 -y v.mp4; echo rc=\$?; ls -l v.mp4"
-            adb shell "cd /data/local/tmp && [ -f libmagick_engine.so ] && ./smoke ./libmagick_engine.so magick t.ppm -resize 20x20 t.png; echo rc=\$?; ls -l t.png" || true
-            adb shell "cd /data/local/tmp && [ -f libbusybox_engine.so ] && ./smoke ./libbusybox_engine.so busybox echo busybox-ok; echo rc=\$?" || true
+          script: bash smoke/run-smoke.sh

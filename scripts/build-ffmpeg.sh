@@ -18,7 +18,7 @@ tar xf ff.txz && cd ffmpeg-$FF_VER
 ./configure --prefix=$PREFIX --target-os=android --arch=aarch64 --cpu=armv8-a --enable-cross-compile \
   --cc=$CC --cxx=$CXX --ar=$AR --ranlib=$RANLIB --strip=$STRIP --nm=$NM --sysroot=$SYSROOT \
   --enable-pic --enable-static --disable-shared --disable-doc --disable-ffplay --disable-debug \
-  --enable-gpl --enable-libx264 --enable-libmp3lame --enable-zlib \
+  --disable-indev=android_camera --enable-gpl --enable-libx264 --enable-libmp3lame --enable-zlib \
   --extra-cflags="-I$PREFIX/include -fPIC -O2" --extra-ldflags="-L$PREFIX/lib" \
   --pkg-config=pkg-config --pkg-config-flags=--static
 make -j$JOBS
