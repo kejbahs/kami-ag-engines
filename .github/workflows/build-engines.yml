@@ -152,7 +152,7 @@ jobs:
       - name: Run on Android emulator (x86_64 image with ARM translation)
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 30
+          api-level: 34
           target: google_apis
           arch: x86_64
           disable-animations: true

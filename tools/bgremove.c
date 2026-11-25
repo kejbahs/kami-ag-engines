@@ -82,6 +82,13 @@ int main(int argc, char **argv) {
     const char *envm = getenv("KAMI_BG_MODEL");
     if (envm && *envm) snprintf(model, sizeof model, "%s", envm); else snprintf(model, sizeof model, "%s/config/u2netp.onnx", dir);
 
+    int w, hgt, ch;
+    fprintf(stderr, "stage: read input\n");
+    unsigned char *img = stbi_load(in, &w, &hgt, &ch, 3);
+    if (!img) return fail("cannot read input image", stbi_failure_reason());
+    if (w < 2 || hgt < 2) return fail("image too small", NULL);
+
+    fprintf(stderr, "stage: load ONNX Runtime %s\n", lib);
     void *h = dlopen(lib, RTLD_NOW | RTLD_LOCAL);
     if (!h) { const char *alt = getenv("KAMI_ORT_LIB"); if (alt) h = dlopen(alt, RTLD_NOW | RTLD_LOCAL); }
     if (!h) return fail("ONNX Runtime not loaded", dlerror());
@@ -90,10 +97,7 @@ int main(int argc, char **argv) {
     ort = getBase()->GetApi(ORT_API_VERSION);
     if (!ort) return fail("ONNX Runtime API version not supported", getBase()->GetVersionString());
 
-    int w, hgt, ch;
-    unsigned char *img = stbi_load(in, &w, &hgt, &ch, 3);
-    if (!img) return fail("cannot read input image", stbi_failure_reason());
-    if (w < 2 || hgt < 2) return fail("image too small", NULL);
+    fprintf(stderr, "stage: ONNX Runtime API ok\n");
 
     /* 320x320 bilinear resize + ImageNet normalisation (as rembg does for u2netp) */
     static float input[3 * S * S];
@@ -111,6 +115,7 @@ int main(int argc, char **argv) {
     }
 
     OrtEnv *env; OrtSessionOptions *so; OrtSession *sess; OrtMemoryInfo *mi; OrtValue *tin = NULL, *tout = NULL;
+    fprintf(stderr, "stage: CreateEnv\n");
     if (check(ort->CreateEnv(ORT_LOGGING_LEVEL_ERROR, "bgremove", &env), "CreateEnv")) return 1;
     if (check(ort->CreateSessionOptions(&so), "SessionOptions")) return 1;
     ort->SetIntraOpNumThreads(so, threads > 0 ? threads : 2);
