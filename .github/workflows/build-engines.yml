@@ -1,0 +1,73 @@
+name: Build engines
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    outputs:
+      tag: ${{ steps.pack.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq nasm pkg-config autoconf automake libtool cmake >/dev/null && echo "NDK=$ANDROID_NDK_LATEST_HOME"
+      - name: ffmpeg + ffprobe
+        run: bash scripts/build-ffmpeg.sh
+      - name: ImageMagick
+        id: magick
+        continue-on-error: true
+        run: bash scripts/build-magick.sh
+      - name: BusyBox
+        id: busybox
+        continue-on-error: true
+        run: bash scripts/build-busybox.sh
+      - name: Pack + manifest
+        id: pack
+        run: |
+          TAG=engines-${{ github.run_number }}
+          python3 scripts/pack.py build/out $TAG ${{ github.run_number }}
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "magick=${{ steps.magick.outcome }} busybox=${{ steps.busybox.outcome }}"
+          ls -l build/out/dist
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=${{ steps.pack.outputs.tag }}
+          gh release create $TAG build/out/dist/* --title "Kami AG engines $TAG" --notes "arm64-v8a engine packs for Kami AG (downloaded one by one from «ابزارهای محلی و مدل‌ها»). ImageMagick: ${{ steps.magick.outcome }}, BusyBox: ${{ steps.busybox.outcome }}." --latest
+  smoke:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Build smoke runner + fetch packs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TC=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64
+          $TC/bin/aarch64-linux-android26-clang -O2 -o smoke-arm64 smoke/smoke.c -ldl
+          mkdir packs && cd packs && gh release download ${{ needs.build.outputs.tag }} --pattern '*.zip' && for z in *.zip; do unzip -o -q $z; done && ls -l
+          printf 'P6\n2 2\n255\n' > ../t.ppm; printf '\xff\x00\x00\x00\xff\x00\x00\x00\xff\xff\xff\xff' >> ../t.ppm
+      - name: Run on Android emulator (x86_64 image with ARM translation)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          script: |
+            adb push smoke-arm64 /data/local/tmp/smoke && adb shell chmod 755 /data/local/tmp/smoke
+            for f in packs/*.so t.ppm; do adb push $f /data/local/tmp/; done
+            adb shell "cd /data/local/tmp && ./smoke ./libffmpeg_engine.so ffmpeg -hide_banner -f lavfi -i sine=d=1 -c:a libmp3lame -y s.mp3; echo rc=\$?; ls -l s.mp3"
+            adb shell "cd /data/local/tmp && ./smoke ./libffprobe_engine.so ffprobe -hide_banner s.mp3; echo rc=\$?"
+            adb shell "cd /data/local/tmp && ./smoke ./libffmpeg_engine.so ffmpeg -hide_banner -f lavfi -i testsrc=d=1:s=320x240 -c:v libx264 -y v.mp4; echo rc=\$?; ls -l v.mp4"
+            adb shell "cd /data/local/tmp && [ -f libmagick_engine.so ] && ./smoke ./libmagick_engine.so magick t.ppm -resize 20x20 t.png; echo rc=\$?; ls -l t.png" || true
+            adb shell "cd /data/local/tmp && [ -f libbusybox_engine.so ] && ./smoke ./libbusybox_engine.so busybox echo busybox-ok; echo rc=\$?" || true
