@@ -186,4 +186,7 @@ jobs:
       - name: Build or tests failed — delete the draft, publish nothing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release delete ${{ needs.prepare.outputs.tag }} --yes --cleanup-tag -R ${{ github.repository }}
+        # a draft has no git tag yet, so --cleanup-tag would fail after the draft itself is already gone
+        run: |
+          gh release delete ${{ needs.prepare.outputs.tag }} --yes -R ${{ github.repository }} || echo "draft already gone"
+          gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/${{ needs.prepare.outputs.tag }} 2>/dev/null || echo "no tag to remove"
