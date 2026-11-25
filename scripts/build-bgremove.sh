@@ -37,3 +37,17 @@ tail -n 45 stb_image.h > $OUT/bgremove-licenses/stb-LICENSE
 echo "ort$ORT_VER" > $OUT/bgremove.version
 sha256sum u2netp.onnx | cut -d" " -f1 > $OUT/bgremove.model
 ls -l $OUT/libbgremove_engine.so $OUT/libonnxruntime.so $OUT/bgremove-config
+
+# CI-only twin for the emulator smoke test: the SAME tools/bgremove.c + bridge + the SAME ORT version, built for
+# x86_64. On the x86_64 emulator, arm64 ONNX Runtime segfaults while loading under ARM translation (run
+# 45706043586: «stage: load ONNX Runtime» → SIGSEGV; ffmpeg/magick/busybox pass), so the real inference is
+# checked natively here. Never part of the manifest; deleted from the release before publishing.
+X=$TC/bin/x86_64-linux-android$API-clang
+mkdir -p $WORK/x86 $OUT/x86test/config
+$X -c -fPIC -O2 -fvisibility=default $ROOT/bridge/kami_engine_jni.c -o $WORK/x86/bridge.o
+$X -c -fPIC -O2 -I$WORK/ort/headers -I$WORK $ROOT/tools/bgremove.c -o $WORK/x86/bgremove.o
+$X $LDSO -o $OUT/x86test/libbgremove_engine.so $WORK/x86/bridge.o $WORK/x86/bgremove.o -lm -llog -ldl
+cp ort/jni/x86_64/libonnxruntime.so $OUT/x86test/libonnxruntime.so
+cp u2netp.onnx $OUT/x86test/config/u2netp.onnx
+$X -O2 -o $OUT/x86test/smk $ROOT/smoke/smoke.c -ldl
+tar -C $OUT -cf $OUT/bgremove-x86_64-test.tar x86test && ls -l $OUT/bgremove-x86_64-test.tar

@@ -130,6 +130,7 @@ jobs:
         run: |
           python3 scripts/pack.py one build/out ${{ needs.prepare.outputs.tag }} ${{ github.run_number }} bgremove
           gh release upload ${{ needs.prepare.outputs.tag }} build/out/dist/*.zip build/out/dist/bgremove.entry.json --clobber
+          gh release upload ${{ needs.prepare.outputs.tag }} build/out/bgremove-x86_64-test.tar --clobber
   smoke:
     needs: [prepare, ffmpeg, magick, busybox, bgremove]
     runs-on: ubuntu-24.04
@@ -148,7 +149,7 @@ jobs:
           $TC/bin/aarch64-linux-android26-clang -O2 -o jni-harness-arm64 smoke/jni_harness.c -ldl
           $TC/bin/aarch64-linux-android26-clang -O2 -o smoke-arm64 smoke/smoke.c -ldl
           bash smoke/apk/build-apk.sh
-          mkdir packs && cd packs && gh release download ${{ needs.prepare.outputs.tag }} --pattern '*.zip' && for z in *.zip; do unzip -o -q $z; done && ls -lR | head -60
+          mkdir packs && cd packs && gh release download ${{ needs.prepare.outputs.tag }} --pattern '*.zip' && for z in *.zip; do unzip -o -q $z; done && (gh release download ${{ needs.prepare.outputs.tag }} --pattern 'bgremove-x86_64-test.tar' && tar xf bgremove-x86_64-test.tar && rm bgremove-x86_64-test.tar || true) && ls -lR | head -60
       - name: Run on Android emulator (x86_64 image with ARM translation)
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -176,9 +177,10 @@ jobs:
           gh release download $TAG --pattern '*.entry.json'
           gh release download $TAG --pattern 'smoke.log' || true
           python3 ../scripts/pack.py merge . $TAG
+          gh release delete-asset $TAG bgremove-x86_64-test.tar -y || true
           gh release upload $TAG manifest.json --clobber
           SUM=$(grep -m1 'SMOKE SUMMARY' smoke.log 2>/dev/null || echo 'smoke passed')
-          gh release edit $TAG --draft=false --latest --notes "arm64-v8a engine packs for Kami AG (downloaded one by one from «ابزارهای محلی و مدل‌ها › موتورهای روی گوشی»). Upstream: ${{ needs.check.outputs.summary }}. Tests on Android emulator (real app process + JNI harness, exit code + output content): $SUM."
+          gh release edit $TAG --draft=false --latest --notes "arm64-v8a engine packs for Kami AG (downloaded one by one from «ابزارهای محلی و مدل‌ها › موتورهای روی گوشی»). Upstream: ${{ needs.check.outputs.summary }}. Tests on Android 14 emulator (each engine's real main, exit code + output content; bgremove inference checked with an x86_64 twin of the same source + ORT): $SUM."
   discard:
     needs: [prepare, ffmpeg, magick, busybox, bgremove, smoke, publish]
     if: ${{ always() && needs.prepare.result == 'success' && needs.publish.result != 'success' }}

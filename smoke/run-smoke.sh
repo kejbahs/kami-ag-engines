@@ -72,8 +72,22 @@ if have libbusybox_engine.so; then
   t busybox-wc 0 "[0-9]+ +[0-9]+ +[0-9]+ +t.ppm" libbusybox_engine.so busybox wc t.ppm
 else echo "SMOKE FAIL busybox (no pack)"; fails=$((fails+1)); fi
 
+tx() { # x86_64 twin (same source, same ORT version, native on the emulator)
+  local name=$1 want=$2 re=$3; shift 3
+  local args=""; for a in "$@"; do args="$args '$a'"; done
+  echo "[$(date -u +%H:%M:%S)] start $name"
+  local out; out=$(timeout 300 adb shell "cd $T/hxjob && LD_LIBRARY_PATH=$T/x86test timeout 280 $T/x86test/smk $T/x86test/libbgremove_engine.so $args 2>&1; r=\$?; echo; echo RC \$r" | tr -d '\r')
+  [ -n "$out" ] || out="RC timeout"
+  local rcl; rcl=$(echo "$out" | grep '^RC ' | tail -1)
+  check "$name" "$want" "$re" "$rcl
+$out"
+}
+if [ -d packs/x86test ]; then adb push packs/x86test $T/ >/dev/null; adb shell chmod 755 $T/x86test/smk; fi
+
 if have libbgremove_engine.so; then
-  t bgremove 0 "BGREMOVE OK 64x48 fg=([5-9]|[1-7][0-9])%" libbgremove_engine.so bgremove bg.ppm cut.png --mask mask.png
+  if [ -d packs/x86test ]; then
+    tx bgremove-x86twin 0 "BGREMOVE OK 64x48 fg=([5-9]|[1-7][0-9])%" bgremove bg.ppm cut.png --mask mask.png
+  else echo "SMOKE FAIL bgremove (no x86_64 twin)"; fails=$((fails+1)); fi
   if have libmagick_engine.so; then
     t bgremove-alpha 0 "TrueColorAlpha" libmagick_engine.so magick identify -verbose cut.png
   fi
