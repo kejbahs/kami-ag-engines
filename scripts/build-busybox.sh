@@ -35,7 +35,7 @@ set +o pipefail; yes "" | make oldconfig >/dev/null; set -o pipefail
 ok=0
 for round in $(seq 1 25); do
   if make -k -j$JOBS CC=$CC AR=$AR STRIP=$STRIP CROSS_COMPILE= HOSTCC=gcc EXTRA_CFLAGS="-fPIC -O2 -include $WORK/bb-shim.h" busybox_unstripped > build.log 2>&1; then ok=1; break; fi
-  bad=$(grep -oE '^[a-z_]+/[a-z0-9_/-]+\.c:[0-9]+:[0-9]+: error' build.log | cut -d: -f1 | sort -u)
+  bad=$(grep -oE '^[a-z_]+/[a-z0-9_/-]+\.c:[0-9]+:[0-9]+: error' build.log | cut -d: -f1 | sort -u || true)
   [ -n "$bad" ] || { echo "busybox: link/other failure"; tail -60 build.log; exit 1; }
   changed=0
   for f in $bad; do

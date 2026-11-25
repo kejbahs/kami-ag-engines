@@ -11,7 +11,10 @@ U2_SHA=${U2_SHA:-309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd
 STB=f58f558c120e9b32c217290b80bad1a0729fbb2c
 cd $WORK
 sha() { local got; got=$(sha256sum "$1" | cut -d' ' -f1); echo "$1 sha256=$got"; [ -z "$2" ] || [ "$got" = "$2" ] || { echo "SHA MISMATCH $1 (want $2)"; exit 1; }; }
-fetch https://repo1.maven.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/$ORT_VER/onnxruntime-android-$ORT_VER.aar ort.aar
+# Google's public Maven Central mirror first (Maven Central answers GitHub runners with 429 at busy times).
+ORT_PATH=com/microsoft/onnxruntime/onnxruntime-android/$ORT_VER/onnxruntime-android-$ORT_VER.aar
+curl -fsSL --retry 2 -o ort.aar https://maven-central.storage-download.googleapis.com/maven2/$ORT_PATH \
+  || curl -fsSL -o ort.aar https://repo1.maven.org/maven2/$ORT_PATH
 [ "$ORT_VER" = "1.20.0" ] && sha ort.aar "$ORT_SHA" || sha ort.aar ""
 rm -rf ort && mkdir ort && (cd ort && unzip -q ../ort.aar)
 fetch "$U2_URL" u2netp.onnx; sha u2netp.onnx "$U2_SHA"

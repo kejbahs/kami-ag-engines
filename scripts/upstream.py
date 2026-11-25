@@ -52,7 +52,11 @@ bb = bbs[-1] if bbs else cur.get("busybox", "1.36.1")
 
 ORT_CUR = cur.get("bgremove", "ort1.20.0")[3:] or "1.20.0"
 def ort_latest():
-    meta = get("https://repo1.maven.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/maven-metadata.xml")
+    path = "com/microsoft/onnxruntime/onnxruntime-android/maven-metadata.xml"
+    try:  # Google's Maven Central mirror first; Maven Central rate-limits GitHub runners (429)
+        meta = get("https://maven-central.storage-download.googleapis.com/maven2/" + path)
+    except Exception:
+        meta = get("https://repo1.maven.org/maven2/" + path)
     return (re.search(r"<release>([0-9.]+)</release>", meta) or re.search(r"<latest>([0-9.]+)</latest>", meta)).group(1)
 ort = safe("onnxruntime", ort_latest, ORT_CUR)
 
