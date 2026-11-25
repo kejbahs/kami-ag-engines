@@ -84,6 +84,7 @@ jobs:
           gh release edit $TAG --draft=false --latest --notes "arm64-v8a engine packs for Kami AG (downloaded one by one from «ابزارهای محلی و مدل‌ها»). ffmpeg: ${{ needs.ffmpeg.result }}, ImageMagick: ${{ needs.magick.result }}, BusyBox: ${{ needs.busybox.result }}."
   smoke:
     needs: [prepare, publish]
+    if: ${{ always() && needs.publish.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:

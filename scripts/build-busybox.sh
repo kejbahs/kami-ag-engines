@@ -16,7 +16,7 @@ for o in FEATURE_SYSLOG SYSLOGD LOGGER KLOGD FEATURE_UTMP FEATURE_WTMP WALL LAST
   CRONTAB CROND MAKEDEVS MAN MICROCOM START_STOP_DAEMON RUNSV RUNSVDIR SV SVC SVOK SVLOGD CHPST ENVDIR ENVUIDGID SETUIDGID SOFTLIMIT HUSH FEATURE_SH_IS_HUSH; do
   sed -i "s/^CONFIG_$o=y/# CONFIG_$o is not set/" .config
 done
-yes "" | make oldconfig >/dev/null
+set +o pipefail; yes "" | make oldconfig >/dev/null; set -o pipefail
 make -j$JOBS CC=$CC AR=$AR STRIP=$STRIP CROSS_COMPILE= HOSTCC=gcc EXTRA_CFLAGS="-fPIC -O2 -DANDROID -D__ANDROID__" busybox_unstripped || make -j1 CC=$CC AR=$AR CROSS_COMPILE= HOSTCC=gcc EXTRA_CFLAGS="-fPIC -O2" busybox_unstripped 2>&1 | tail -60
 bridge
 BIOBJ=$(find . -mindepth 2 -maxdepth 2 -name built-in.o | sort)

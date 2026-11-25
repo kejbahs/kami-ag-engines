@@ -15,7 +15,7 @@ cmake -S freetype-VER-2-13-3 -B ft-b $CMAKE_ANDROID -DFT_DISABLE_HARFBUZZ=ON -DF
 ls $PREFIX/lib $PREFIX/lib/pkgconfig || true
 fetch https://github.com/ImageMagick/ImageMagick/archive/refs/tags/$IM_VER.tar.gz im.tgz && tar xf im.tgz
 cd ImageMagick-$IM_VER
-./configure --host=aarch64-linux-android --prefix=$PREFIX CC=$CC CXX=$CXX AR=$AR RANLIB=$RANLIB \
+PKG_CONFIG="pkg-config --static" LIBS="-lsharpyuv -lm" ./configure --host=aarch64-linux-android --prefix=$PREFIX CC=$CC CXX=$CXX AR=$AR RANLIB=$RANLIB \
   CFLAGS="-O2 -fPIC -I$PREFIX/include" CPPFLAGS="-I$PREFIX/include" LDFLAGS="-L$PREFIX/lib" \
   --enable-static --disable-shared --with-pic --without-modules --disable-openmp --disable-opencl --without-x --without-perl \
   --without-magick-plus-plus --disable-docs --with-png --with-jpeg --with-webp --with-freetype --with-zlib \
@@ -28,7 +28,7 @@ bridge
 MOBJ=$(find utilities -name '*magick*.o' | head -1)
 [ -n "$MOBJ" ] || { echo "magick object not found"; find utilities -name '*.o'; exit 1; }
 LIBS=$(pkg-config --static --libs MagickWand)
-$CC $LDSO -o $OUT/libmagick_engine.so -Wl,-soname,libmagick_engine.so $WORK/bridge.o $MOBJ -L$PREFIX/lib $LIBS -lz -lm -llog -ldl
+$CC $LDSO -o $OUT/libmagick_engine.so -Wl,-soname,libmagick_engine.so $WORK/bridge.o $MOBJ -L$PREFIX/lib $LIBS -lsharpyuv -lz -lm -llog -ldl
 $STRIP --strip-unneeded $OUT/libmagick_engine.so
 check_so $OUT/libmagick_engine.so
 mkdir -p $OUT/magick-config; cp $PREFIX/etc/ImageMagick-7/*.xml $OUT/magick-config/ 2>/dev/null || true
