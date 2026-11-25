@@ -28,6 +28,7 @@ for round in $(seq 1 25); do
   [ -n "$bad" ] || { echo "busybox: link/other failure"; tail -60 build.log; exit 1; }
   changed=0
   for f in $bad; do
+    case $f in shell/hush.c) sed -i 's/^CONFIG_\([A-Z_]*HUSH[A-Z_]*\)=y/# CONFIG_\1 is not set/' .config; echo "busybox round $round: off hush (ash stays)"; changed=1; continue;; esac
     case $f in libbb/*|archival/libarchive/*|shell/*) echo "busybox: core file fails: $f"; grep -A3 "^$f" build.log | head -20; continue;; esac
     n=$(basename $f .c | tr 'a-z-' 'A-Z_')
     if grep -q "^CONFIG_$n=y" .config; then sed -i "s/^CONFIG_$n=y/# CONFIG_$n is not set/" .config; echo "busybox round $round: off $n ($f)"; changed=1
