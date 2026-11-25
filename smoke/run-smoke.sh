@@ -45,19 +45,22 @@ check() { # name want(0|nz) regex output
 t() { # NAME WANT REGEX LIB ARGV…
   local name=$1 want=$2 re=$3 lib=$4; shift 4
   local args=""; for a in "$@"; do args="$args '$a'"; done
-  local hx; hx=$(adb shell "cd $T && MAGICK_CONFIGURE_PATH=$T/config ./hx $T/$lib $T/hxjob $args 2>&1" | tr -d '\r')
+  echo "[$(date -u +%H:%M:%S)] start $name"
+  local hx; hx=$(timeout 300 adb shell "cd $T && MAGICK_CONFIGURE_PATH=$T/config timeout 280 ./hx $T/$lib $T/hxjob $args 2>&1; echo HXEXIT \$?" | tr -d '\r')
+  [ -n "$hx" ] || hx="RC timeout (no answer from adb in 300 s)"
   check "HX  $name" "$want" "$re" "$hx"
   { echo "$lib"; for a in "$@"; do echo "$a"; done; } > /tmp/args.txt
   adb push /tmp/args.txt $T/args.txt >/dev/null
   adb shell "am force-stop $P; cat $T/args.txt | run-as $P sh -c 'rm -f files/job/rc.txt files/job/out.txt files/job/err.txt files/job/crash.txt files/job/fail.txt; cat > files/job/args.txt'"
-  adb shell "am start -n $P/.Smoke" >/dev/null 2>&1
+  timeout 60 adb shell "am start -n $P/.Smoke" >/dev/null 2>&1
   local i=0
-  while [ $i -lt 240 ]; do
-    adb shell "run-as $P sh -c '[ -s files/job/rc.txt ]'" && break
+  while [ $i -lt 480 ]; do
+    timeout 20 adb shell "run-as $P sh -c '[ -s files/job/rc.txt ]'" && break
     sleep 0.5; i=$((i+1))
   done
   sleep 0.5
-  local app; app=$(adb shell "run-as $P sh -c 'cd files/job; echo RC \$(cat rc.txt 2>/dev/null); echo CRASH \$(cat crash.txt 2>/dev/null); echo FAIL \$(cat fail.txt 2>/dev/null); echo STDOUT; cat out.txt 2>/dev/null; echo; echo STDERR; tail -c 1500 err.txt 2>/dev/null'" | tr -d '\r')
+  echo "[$(date -u +%H:%M:%S)] app $name done after $i polls"
+  local app; app=$(timeout 60 adb shell "run-as $P sh -c 'cd files/job; echo RC \$(cat rc.txt 2>/dev/null); echo CRASH \$(cat crash.txt 2>/dev/null); echo FAIL \$(cat fail.txt 2>/dev/null); echo STDOUT; cat out.txt 2>/dev/null; echo; echo STDERR; tail -c 1500 err.txt 2>/dev/null'" | tr -d '\r')
   check "APP $name" "$want" "$re" "$app"
 }
 

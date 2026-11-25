@@ -155,7 +155,7 @@ jobs:
           target: google_apis
           arch: x86_64
           disable-animations: true
-          script: bash -c 'bash smoke/run-smoke.sh > smoke.log 2>&1; rc=$?; cat smoke.log; exit $rc'
+          script: bash -c 'set -o pipefail; bash smoke/run-smoke.sh 2>&1 | tee smoke.log'
       - name: Keep the smoke log with the draft
         if: ${{ always() }}
         env:
