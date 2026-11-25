@@ -7,10 +7,12 @@ fetch https://busybox.net/downloads/busybox-$BB_VER.tar.bz2 bb.tbz && tar xf bb.
 make defconfig
 # busybox 1.38 yescrypt calls explicit_bzero(), which bionic only declares from API 34 — tiny shim for API 26.
 cat > $WORK/bb-shim.h <<'SHIM'
+#ifndef __ASSEMBLER__
 #include <stddef.h>
 #if !defined(__ANDROID_API__) || __ANDROID_API__ < 34
 static inline void kami_explicit_bzero(void *p, size_t n) { volatile unsigned char *q = (volatile unsigned char *)p; while (n--) *q++ = 0; }
 #define explicit_bzero kami_explicit_bzero
+#endif
 #endif
 SHIM
 # Turn off things bionic lacks or that make no sense inside an app.
