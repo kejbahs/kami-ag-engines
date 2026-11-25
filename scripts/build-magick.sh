@@ -4,6 +4,20 @@
 source "$(dirname "$0")/env.sh"
 IM_VER=${IM_VER:-7.1.2-36}
 cd $WORK
+# engines-6 fix (phone test 2026-11-25: «NoEncodeDelegateForThisImageFormat PNG», Delegates: jpeg webp only):
+# libpng16.pc and freetype2.pc say «Requires.private: zlib», but zlib comes from the NDK sysroot and had no
+# .pc in PKG_CONFIG_LIBDIR — so pkg-config rejected png AND freetype (and zlib itself) silently.
+mkdir -p $PREFIX/lib/pkgconfig
+ZV=$(grep -m1 '#define ZLIB_VERSION' $SYSROOT/usr/include/zlib.h | cut -d'"' -f2)
+cat > $PREFIX/lib/pkgconfig/zlib.pc <<PC
+prefix=$SYSROOT/usr
+Name: zlib
+Description: zlib from the Android NDK sysroot
+Version: ${ZV:-1.2.13}
+Libs: -lz
+Cflags:
+PC
+pkg-config --exists zlib && echo "zlib.pc ok ($(pkg-config --modversion zlib))"
 fetch https://github.com/pnggroup/libpng/archive/refs/tags/v1.6.47.tar.gz png.tgz && tar xf png.tgz
 cmake -S libpng-1.6.47 -B png-b $CMAKE_ANDROID -DPNG_SHARED=OFF -DPNG_STATIC=ON -DPNG_TESTS=OFF -DPNG_TOOLS=OFF -DPNG_EXECUTABLES=OFF && cmake --build png-b -j$JOBS && cmake --install png-b
 fetch https://github.com/libjpeg-turbo/libjpeg-turbo/archive/refs/tags/3.1.0.tar.gz jpg.tgz && tar xf jpg.tgz
@@ -13,6 +27,7 @@ cmake -S libwebp-1.5.0 -B webp-b $CMAKE_ANDROID -DWEBP_BUILD_ANIM_UTILS=OFF -DWE
 fetch https://github.com/freetype/freetype/archive/refs/tags/VER-2-13-3.tar.gz ft.tgz && tar xf ft.tgz
 cmake -S freetype-VER-2-13-3 -B ft-b $CMAKE_ANDROID -DFT_DISABLE_HARFBUZZ=ON -DFT_DISABLE_BROTLI=ON -DFT_DISABLE_BZIP2=ON -DFT_DISABLE_PNG=ON -DFT_REQUIRE_ZLIB=ON && cmake --build ft-b -j$JOBS && cmake --install ft-b
 ls $PREFIX/lib $PREFIX/lib/pkgconfig || true
+for m in zlib libpng16 freetype2 libjpeg libwebp; do pkg-config --static --exists $m || { echo "pkg-config cannot resolve $m"; pkg-config --static --print-errors --exists $m; exit 1; }; done
 fetch https://github.com/ImageMagick/ImageMagick/archive/refs/tags/$IM_VER.tar.gz im.tgz && tar xf im.tgz
 cd ImageMagick-$IM_VER
 PKG_CONFIG="pkg-config --static" LIBS="-lsharpyuv -lm" ./configure --host=aarch64-linux-android --prefix=$PREFIX CC=$CC CXX=$CXX AR=$AR RANLIB=$RANLIB \
@@ -22,6 +37,13 @@ PKG_CONFIG="pkg-config --static" LIBS="-lsharpyuv -lm" ./configure --host=aarch6
   --without-xml --without-lcms --without-tiff --without-fontconfig --without-heic --without-jxl --without-raw --without-lzma \
   --without-bzlib --without-zstd --without-openexr --without-gslib --without-gvc --without-rsvg --without-wmf --without-djvu \
   --without-fftw --without-pango --without-raqm --without-jbig --without-dps --without-fpx --without-lqr --without-zip --without-uhdr
+# CI gate: configure must really have enabled PNG, FreeType, zlib, JPEG and WebP.
+for d in PNG FREETYPE ZLIB JPEG WEBP; do
+  grep -qE "define (MAGICKCORE_)?${d}_DELEGATE 1" config/config.h MagickCore/magick-baseconfig.h 2>/dev/null || {
+    echo "DELEGATE MISSING: $d"; grep -hE "_DELEGATE" config/config.h MagickCore/magick-baseconfig.h 2>/dev/null | head -40
+    grep -iE "png|freetype|zlib" config.log | tail -40; exit 1; }
+done
+echo "delegates PNG FREETYPE ZLIB JPEG WEBP: configured"
 make -j$JOBS
 make install
 bridge
@@ -29,6 +51,12 @@ MOBJ=$(find utilities -name '*magick*.o' | head -1)
 [ -n "$MOBJ" ] || { echo "magick object not found"; find utilities -name '*.o'; exit 1; }
 LIBS=$(pkg-config --static --libs MagickWand)
 $CC $LDSO -o $OUT/libmagick_engine.so -Wl,-soname,libmagick_engine.so $WORK/bridge.o $MOBJ -L$PREFIX/lib $LIBS -lsharpyuv -lz -lm -llog -ldl
+# symbol check BEFORE stripping: the real libpng / FreeType / zlib code is inside the library
+for sym in png_create_write_struct FT_Init_FreeType jpeg_start_compress WebPEncode; do
+  $NM $OUT/libmagick_engine.so | grep -q " [Tt] $sym$" || { echo "SYMBOL MISSING in libmagick_engine.so: $sym"; exit 1; }
+done
+$NM -D $OUT/libmagick_engine.so | grep -qE " U (deflate|inflate)$" || { echo "zlib (system libz) not used"; exit 1; }
+echo "symbols png/freetype/zlib/jpeg/webp: present"
 $STRIP --strip-unneeded $OUT/libmagick_engine.so
 check_so $OUT/libmagick_engine.so
 mkdir -p $OUT/magick-config; cp $PREFIX/etc/ImageMagick-7/*.xml $OUT/magick-config/ 2>/dev/null || true

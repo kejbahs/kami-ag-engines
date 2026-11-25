@@ -1,11 +1,52 @@
 name: Build engines
+run-name: "engines ${{ github.event_name == 'schedule' && 'weekly check' || inputs.request_id || 'manual' }}"
+# engines-6 (Kamran 2026-11-25 19:08): the engines update WITHOUT Muse.
+#  - every week (and on manual dispatch, e.g. the app's «ساخت نسخهٔ تازهٔ موتورها» button) the `check` job looks
+#    for newer upstream ffmpeg (same major line) / ImageMagick 7 / BusyBox / ONNX Runtime / U-2-Netp;
+#  - no change → nothing is built and NO release is made;
+#  - change (or force) → all 4 packs are built into a DRAFT release, smoke-tested on an Android emulator
+#    (exit code + real output, in a real app process too), and published as the new latest engines-N with
+#    manifest.json ONLY if every test passed; otherwise the draft is deleted.
+#  - installing on the phone always stays manual (his tap in the app).
 on:
+  schedule:
+    - cron: "17 3 * * 1"
   workflow_dispatch:
+    inputs:
+      force:
+        description: "build even when upstream did not change"
+        type: boolean
+        default: false
+      request_id:
+        description: "id the app uses to find this run"
+        type: string
+        default: ""
 permissions:
   contents: write
-# Each engine is its OWN job (no chain between engines): one failing never skips the others.
+concurrency:
+  group: engines-build
+  cancel-in-progress: false
 jobs:
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      changed: ${{ steps.u.outputs.changed }}
+      ff: ${{ steps.u.outputs.ff }}
+      im: ${{ steps.u.outputs.im }}
+      bb: ${{ steps.u.outputs.bb }}
+      ort: ${{ steps.u.outputs.ort }}
+      u2sha: ${{ steps.u.outputs.u2sha }}
+      summary: ${{ steps.u.outputs.summary }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: u
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE: ${{ inputs.force && 'true' || 'false' }}
+        run: python3 scripts/upstream.py
   prepare:
+    needs: check
+    if: ${{ needs.check.outputs.changed == 'true' }}
     runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.t.outputs.tag }}
@@ -16,91 +57,97 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG=engines-${{ github.run_number }}
-          gh release create $TAG --draft --target ${{ github.sha }} --title "Kami AG engines $TAG" --notes "building…"
+          gh release create $TAG --draft --target ${{ github.sha }} --title "Kami AG engines $TAG" --notes "building + testing… (${{ needs.check.outputs.summary }})"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
   ffmpeg:
-    needs: prepare
+    needs: [check, prepare]
     runs-on: ubuntu-24.04
     timeout-minutes: 150
+    env:
+      FF_VER: ${{ needs.check.outputs.ff }}
     steps:
       - uses: actions/checkout@v5
       - name: Tools
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq nasm pkg-config autoconf automake libtool cmake >/dev/null && echo "NDK=$ANDROID_NDK_LATEST_HOME"
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq nasm pkg-config autoconf automake libtool cmake >/dev/null
       - name: Build ffmpeg + ffprobe
         run: bash scripts/build-ffmpeg.sh
-      - name: Pack + upload ffmpeg + ffprobe
+      - name: Pack + upload
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 scripts/pack.py one build/out ${{ needs.prepare.outputs.tag }} ${{ github.run_number }} ffmpeg
           gh release upload ${{ needs.prepare.outputs.tag }} build/out/dist/*.zip build/out/dist/ffmpeg.entry.json --clobber
   magick:
-    needs: prepare
+    needs: [check, prepare]
     runs-on: ubuntu-24.04
     timeout-minutes: 150
+    env:
+      IM_VER: ${{ needs.check.outputs.im }}
     steps:
       - uses: actions/checkout@v5
       - name: Tools
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq nasm pkg-config autoconf automake libtool cmake >/dev/null && echo "NDK=$ANDROID_NDK_LATEST_HOME"
-      - name: Build ImageMagick
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq nasm pkg-config autoconf automake libtool cmake >/dev/null
+      - name: Build ImageMagick (png + freetype + zlib + jpeg + webp asserted)
         run: bash scripts/build-magick.sh
-      - name: Pack + upload ImageMagick
+      - name: Pack + upload
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 scripts/pack.py one build/out ${{ needs.prepare.outputs.tag }} ${{ github.run_number }} magick
           gh release upload ${{ needs.prepare.outputs.tag }} build/out/dist/*.zip build/out/dist/magick.entry.json --clobber
   busybox:
-    needs: prepare
+    needs: [check, prepare]
     runs-on: ubuntu-24.04
     timeout-minutes: 150
+    env:
+      BB_VER: ${{ needs.check.outputs.bb }}
     steps:
       - uses: actions/checkout@v5
       - name: Tools
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq nasm pkg-config autoconf automake libtool cmake >/dev/null && echo "NDK=$ANDROID_NDK_LATEST_HOME"
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq nasm pkg-config autoconf automake libtool cmake >/dev/null
       - name: Build BusyBox
         run: bash scripts/build-busybox.sh
-      - name: Pack + upload BusyBox
+      - name: Pack + upload
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 scripts/pack.py one build/out ${{ needs.prepare.outputs.tag }} ${{ github.run_number }} busybox
           gh release upload ${{ needs.prepare.outputs.tag }} build/out/dist/*.zip build/out/dist/busybox.entry.json --clobber
-  publish:
-    needs: [prepare, ffmpeg, magick, busybox]
-    if: ${{ always() && needs.prepare.result == 'success' }}
+  bgremove:
+    needs: [check, prepare]
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      ORT_VER: ${{ needs.check.outputs.ort }}
+      U2_SHA: ${{ needs.check.outputs.u2sha }}
     steps:
       - uses: actions/checkout@v5
-      - name: Merge manifest + publish
+      - name: Build background removal (U-2-Netp + ONNX Runtime)
+        run: bash scripts/build-bgremove.sh
+      - name: Pack + upload
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG=${{ needs.prepare.outputs.tag }}
-          mkdir m && cd m
-          gh release download $TAG --pattern '*.entry.json' || true
-          python3 ../scripts/pack.py merge . $TAG
-          gh release upload $TAG manifest.json --clobber
-          gh release edit $TAG --draft=false --latest --notes "arm64-v8a engine packs for Kami AG (downloaded one by one from «ابزارهای محلی و مدل‌ها»). ffmpeg: ${{ needs.ffmpeg.result }}, ImageMagick: ${{ needs.magick.result }}, BusyBox: ${{ needs.busybox.result }}."
+          python3 scripts/pack.py one build/out ${{ needs.prepare.outputs.tag }} ${{ github.run_number }} bgremove
+          gh release upload ${{ needs.prepare.outputs.tag }} build/out/dist/*.zip build/out/dist/bgremove.entry.json --clobber
   smoke:
-    needs: [prepare, publish]
-    if: ${{ always() && needs.publish.result == 'success' }}
+    needs: [prepare, ffmpeg, magick, busybox, bgremove]
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
-      - name: Build smoke runner + fetch packs
+      - name: Build test harness + test app, fetch packs from the draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TC=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64
-          $TC/bin/aarch64-linux-android26-clang -O2 -o smoke-arm64 smoke/smoke.c -ldl
-          mkdir packs && cd packs && gh release download ${{ needs.prepare.outputs.tag }} --pattern '*.zip' && for z in *.zip; do unzip -o -q $z; done && ls -l
-          printf 'P6\n2 2\n255\n' > ../t.ppm; printf '\xff\x00\x00\x00\xff\x00\x00\x00\xff\xff\xff\xff' >> ../t.ppm
+          $TC/bin/aarch64-linux-android26-clang -O2 -o jni-harness-arm64 smoke/jni_harness.c -ldl
+          bash smoke/apk/build-apk.sh
+          mkdir packs && cd packs && gh release download ${{ needs.prepare.outputs.tag }} --pattern '*.zip' && for z in *.zip; do unzip -o -q $z; done && ls -lR | head -60
       - name: Run on Android emulator (x86_64 image with ARM translation)
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -108,4 +155,35 @@ jobs:
           target: google_apis
           arch: x86_64
           disable-animations: true
-          script: bash smoke/run-smoke.sh
+          script: bash -c 'bash smoke/run-smoke.sh > smoke.log 2>&1; rc=$?; cat smoke.log; exit $rc'
+      - name: Keep the smoke log with the draft
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: '[ -f smoke.log ] && gh release upload ${{ needs.prepare.outputs.tag }} smoke.log --clobber || true'
+  publish:
+    needs: [check, prepare, smoke]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Merge manifest + publish (only after every smoke test passed)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=${{ needs.prepare.outputs.tag }}
+          mkdir m && cd m
+          gh release download $TAG --pattern '*.entry.json'
+          gh release download $TAG --pattern 'smoke.log' || true
+          python3 ../scripts/pack.py merge . $TAG
+          gh release upload $TAG manifest.json --clobber
+          SUM=$(grep -m1 'SMOKE SUMMARY' smoke.log 2>/dev/null || echo 'smoke passed')
+          gh release edit $TAG --draft=false --latest --notes "arm64-v8a engine packs for Kami AG (downloaded one by one from «ابزارهای محلی و مدل‌ها › موتورهای روی گوشی»). Upstream: ${{ needs.check.outputs.summary }}. Tests on Android emulator (real app process + JNI harness, exit code + output content): $SUM."
+  discard:
+    needs: [prepare, ffmpeg, magick, busybox, bgremove, smoke, publish]
+    if: ${{ always() && needs.prepare.result == 'success' && needs.publish.result != 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build or tests failed — delete the draft, publish nothing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete ${{ needs.prepare.outputs.tag }} --yes --cleanup-tag -R ${{ github.repository }}
