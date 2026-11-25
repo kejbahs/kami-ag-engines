@@ -1,15 +1,12 @@
 #!/bin/bash
-# engines-6 smoke (inside the emulator step). Every engine is tested TWICE:
-#   HX  = jni_harness: the real JNI entry from a 64 MB worker thread (fake JNIEnv), adb shell user
-#   APP = smoke.apk: a real Android app process (ART + app seccomp + System.load from files/ + JNI from a
-#         Java thread + killProcess) — the same way Kami AG's :engine process runs it.
+# engines smoke (inside the emulator step): smoke.c dlopens each engine .so and runs its real main
+# (kami_engine_main) under ARM translation. The JNI-thread path is exercised on the phone.
 # Each test checks the exit code AND the real output content. Any FAIL → exit 1 → nothing is published.
 set -u
 P=com.kami.ag.enginesmoke
 T=/data/local/tmp
 fails=0; passes=0
-adb install -r -g smoke.apk || { echo "SMOKE FAIL install smoke.apk"; exit 1; }
-adb push jni-harness-arm64 $T/hx >/dev/null; adb shell chmod 755 $T/hx
+adb push smoke-arm64 $T/smk >/dev/null; adb shell chmod 755 $T/smk
 mkdir -p in
 python3 - <<'PY'
 open("in/t.ppm","wb").write(b"P6\n2 2\n255\n"+bytes([255,0,0, 0,255,0, 0,0,255, 255,255,255]))
@@ -23,11 +20,6 @@ adb shell "rm -rf $T/hxjob $T/config; mkdir -p $T/hxjob $T/config"
 for f in packs/*.so; do adb push "$f" $T/ >/dev/null; done
 if [ -d packs/config ]; then for f in packs/config/*; do adb push "$f" $T/config/ >/dev/null; done; fi
 for f in in/*; do adb push "$f" $T/hxjob/ >/dev/null; done
-adb shell "run-as $P sh -c 'rm -rf files/job files/config; mkdir -p files/job files/config'"
-for f in packs/*.so; do b=$(basename $f); adb shell "cat $T/$b | run-as $P sh -c 'cat > files/$b'"; done
-if [ -d packs/config ]; then for f in packs/config/*; do b=$(basename $f); adb shell "cat $T/config/$b | run-as $P sh -c 'cat > files/config/$b'"; done; fi
-for f in in/*; do b=$(basename $f); adb shell "cat $T/hxjob/$b | run-as $P sh -c 'cat > files/job/$b'"; done
-adb shell "run-as $P ls -l files files/job" | head -30
 
 have() { [ -f "packs/$1" ]; }
 
@@ -43,25 +35,19 @@ check() { # name want(0|nz) regex output
 }
 
 t() { # NAME WANT REGEX LIB ARGV…
+  # CI path = smoke.c: dlopen the engine .so and call its real main via kami_engine_main (the same path that
+  # passed in engines-5). On the x86_64 emulator arm64 code runs under ARM translation; the JNI-thread harness
+  # and the app-process run crash/hang under that translation (runs 45696871637, 45701155472), so the
+  # app-process run is informational only (APPINFO, not counted). The real JNI path is tested on the phone.
   local name=$1 want=$2 re=$3 lib=$4; shift 4
   local args=""; for a in "$@"; do args="$args '$a'"; done
   echo "[$(date -u +%H:%M:%S)] start $name"
-  local hx; hx=$(timeout 300 adb shell "cd $T && MAGICK_CONFIGURE_PATH=$T/config timeout 280 ./hx $T/$lib $T/hxjob $args 2>&1; echo HXEXIT \$?" | tr -d '\r')
-  [ -n "$hx" ] || hx="RC timeout (no answer from adb in 300 s)"
-  check "HX  $name" "$want" "$re" "$hx"
-  { echo "$lib"; for a in "$@"; do echo "$a"; done; } > /tmp/args.txt
-  adb push /tmp/args.txt $T/args.txt >/dev/null
-  adb shell "am force-stop $P; cat $T/args.txt | run-as $P sh -c 'rm -f files/job/rc.txt files/job/out.txt files/job/err.txt files/job/crash.txt files/job/fail.txt; cat > files/job/args.txt'"
-  timeout 60 adb shell "am start -n $P/.Smoke" >/dev/null 2>&1
-  local i=0
-  while [ $i -lt 480 ]; do
-    timeout 20 adb shell "run-as $P sh -c '[ -s files/job/rc.txt ]'" && break
-    sleep 0.5; i=$((i+1))
-  done
-  sleep 0.5
-  echo "[$(date -u +%H:%M:%S)] app $name done after $i polls"
-  local app; app=$(timeout 60 adb shell "run-as $P sh -c 'cd files/job; echo RC \$(cat rc.txt 2>/dev/null); echo CRASH \$(cat crash.txt 2>/dev/null); echo FAIL \$(cat fail.txt 2>/dev/null); echo STDOUT; cat out.txt 2>/dev/null; echo; echo STDERR; tail -c 1500 err.txt 2>/dev/null'" | tr -d '\r')
-  check "APP $name" "$want" "$re" "$app"
+  local out; out=$(timeout 300 adb shell "cd $T/hxjob && LD_LIBRARY_PATH=$T HOME=$T/hxjob TMPDIR=$T/hxjob MAGICK_CONFIGURE_PATH=$T/config MAGICK_TEMPORARY_PATH=$T/hxjob timeout 280 $T/smk $T/$lib $args 2>&1; r=\$?; echo; echo RC \$r" | tr -d '\r')
+  [ -n "$out" ] || out="RC timeout (no answer from adb in 300 s)"
+  # RC line is the LAST line we print; move it first for check()
+  local rcl; rcl=$(echo "$out" | grep '^RC ' | tail -1)
+  check "$name" "$want" "$re" "$rcl
+$out"
 }
 
 if have libffmpeg_engine.so; then

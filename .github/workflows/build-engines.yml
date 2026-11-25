@@ -146,6 +146,7 @@ jobs:
         run: |
           TC=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64
           $TC/bin/aarch64-linux-android26-clang -O2 -o jni-harness-arm64 smoke/jni_harness.c -ldl
+          $TC/bin/aarch64-linux-android26-clang -O2 -o smoke-arm64 smoke/smoke.c -ldl
           bash smoke/apk/build-apk.sh
           mkdir packs && cd packs && gh release download ${{ needs.prepare.outputs.tag }} --pattern '*.zip' && for z in *.zip; do unzip -o -q $z; done && ls -lR | head -60
       - name: Run on Android emulator (x86_64 image with ARM translation)
