@@ -27,7 +27,10 @@ check_so() { # lib.so — fail if it needs anything but Android system libs or l
   $READELF -d $f | grep NEEDED || true
   bad=$($READELF -d $f | grep NEEDED | grep -vE '\[(libc|libm|libdl|liblog|libz|libandroid|libmediandk)\.so\]' || true)
   [ -z "$bad" ] || { echo "unexpected NEEDED: $bad"; exit 1; }
-  $NM -D --defined-only $f | grep -q Java_com_kami_ag_engines_EngineNative_run || { echo "JNI entry missing"; exit 1; }
-  $NM -D --defined-only $f | grep -q kami_engine_main || { echo "kami_engine_main missing"; exit 1; }
-  $READELF -h $f | grep -q AArch64 || { echo "not arm64"; exit 1; }
+  # no «nm | grep -q» under pipefail: grep -q quits early, nm gets SIGPIPE and the check fails at random
+  local syms; syms=$($NM -D --defined-only $f)
+  case "$syms" in *Java_com_kami_ag_engines_EngineNative_run*) ;; *) echo "JNI entry missing"; exit 1;; esac
+  case "$syms" in *kami_engine_main*) ;; *) echo "kami_engine_main missing"; exit 1;; esac
+  local hdr; hdr=$($READELF -h $f)
+  case "$hdr" in *AArch64*) ;; *) echo "not arm64"; exit 1;; esac
 }
