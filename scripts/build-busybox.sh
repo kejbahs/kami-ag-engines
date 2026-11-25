@@ -5,6 +5,14 @@ BB_VER=${BB_VER:-1.36.1}
 cd $WORK
 fetch https://busybox.net/downloads/busybox-$BB_VER.tar.bz2 bb.tbz && tar xf bb.tbz && cd busybox-$BB_VER
 make defconfig
+# busybox 1.38 yescrypt calls explicit_bzero(), which bionic only declares from API 34 — tiny shim for API 26.
+cat > $WORK/bb-shim.h <<'SHIM'
+#include <stddef.h>
+#if !defined(__ANDROID_API__) || __ANDROID_API__ < 34
+static inline void kami_explicit_bzero(void *p, size_t n) { volatile unsigned char *q = (volatile unsigned char *)p; while (n--) *q++ = 0; }
+#define explicit_bzero kami_explicit_bzero
+#endif
+SHIM
 # Turn off things bionic lacks or that make no sense inside an app.
 # engines-6: FEATURE_SUID off — with it busybox calls setgid()/setuid() to «drop privileges» before every
 # applet, and Android's app seccomp kills the process for that (SIGSYS): no output, «crash» (phone 19:06).
@@ -26,7 +34,7 @@ for o in HOSTID IPCS IPCRM IPCALC NSENTER UNSHARE CONSPY ETHER_WAKE ARP ARPING; 
 set +o pipefail; yes "" | make oldconfig >/dev/null; set -o pipefail
 ok=0
 for round in $(seq 1 25); do
-  if make -k -j$JOBS CC=$CC AR=$AR STRIP=$STRIP CROSS_COMPILE= HOSTCC=gcc EXTRA_CFLAGS="-fPIC -O2" busybox_unstripped > build.log 2>&1; then ok=1; break; fi
+  if make -k -j$JOBS CC=$CC AR=$AR STRIP=$STRIP CROSS_COMPILE= HOSTCC=gcc EXTRA_CFLAGS="-fPIC -O2 -include $WORK/bb-shim.h" busybox_unstripped > build.log 2>&1; then ok=1; break; fi
   bad=$(grep -oE '^[a-z_]+/[a-z0-9_/-]+\.c:[0-9]+:[0-9]+: error' build.log | cut -d: -f1 | sort -u)
   [ -n "$bad" ] || { echo "busybox: link/other failure"; tail -60 build.log; exit 1; }
   changed=0

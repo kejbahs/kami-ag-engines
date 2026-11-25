@@ -52,10 +52,13 @@ MOBJ=$(find utilities -name '*magick*.o' | head -1)
 LIBS=$(pkg-config --static --libs MagickWand)
 $CC $LDSO -o $OUT/libmagick_engine.so -Wl,-soname,libmagick_engine.so $WORK/bridge.o $MOBJ -L$PREFIX/lib $LIBS -lsharpyuv -lz -lm -llog -ldl
 # symbol check BEFORE stripping: the real libpng / FreeType / zlib code is inside the library
+# (nm output goes to a file first: «nm | grep -q» under pipefail fails with SIGPIPE when grep stops early)
+$NM $OUT/libmagick_engine.so > $WORK/magick.syms
+$NM -D $OUT/libmagick_engine.so > $WORK/magick.dsyms
 for sym in png_create_write_struct FT_Init_FreeType jpeg_start_compress WebPEncode; do
-  $NM $OUT/libmagick_engine.so | grep -q " [Tt] $sym$" || { echo "SYMBOL MISSING in libmagick_engine.so: $sym"; exit 1; }
+  grep -q " [Tt] $sym$" $WORK/magick.syms || { echo "SYMBOL MISSING in libmagick_engine.so: $sym"; grep -c . $WORK/magick.syms; grep -i "png_create\|FT_Init" $WORK/magick.syms | head; exit 1; }
 done
-$NM -D $OUT/libmagick_engine.so | grep -qE " U (deflate|inflate)$" || { echo "zlib (system libz) not used"; exit 1; }
+grep -qE " U (deflate|inflate)$" $WORK/magick.dsyms || { echo "zlib (system libz) not used"; exit 1; }
 echo "symbols png/freetype/zlib/jpeg/webp: present"
 $STRIP --strip-unneeded $OUT/libmagick_engine.so
 check_so $OUT/libmagick_engine.so
