@@ -17,7 +17,27 @@ for o in FEATURE_SYSLOG SYSLOGD LOGGER KLOGD FEATURE_UTMP FEATURE_WTMP WALL LAST
   sed -i "s/^CONFIG_$o=y/# CONFIG_$o is not set/" .config
 done
 set +o pipefail; yes "" | make oldconfig >/dev/null; set -o pipefail
-make -j$JOBS CC=$CC AR=$AR STRIP=$STRIP CROSS_COMPILE= HOSTCC=gcc EXTRA_CFLAGS="-fPIC -O2 -DANDROID -D__ANDROID__" busybox_unstripped || make -j1 CC=$CC AR=$AR CROSS_COMPILE= HOSTCC=gcc EXTRA_CFLAGS="-fPIC -O2" busybox_unstripped 2>&1 | tail -60
+# Self-healing: applets whose source does not compile against bionic are switched off one by one (up to 25 rounds).
+BBMAKE="make CC=$CC AR=$AR STRIP=$STRIP CROSS_COMPILE= HOSTCC=gcc EXTRA_CFLAGS=-fPIC\ -O2"
+for o in HOSTID IPCS IPCRM IPCALC NSENTER UNSHARE CONSPY ETHER_WAKE ARP ARPING; do sed -i "s/^CONFIG_$o=y/# CONFIG_$o is not set/" .config; done
+set +o pipefail; yes "" | make oldconfig >/dev/null; set -o pipefail
+ok=0
+for round in $(seq 1 25); do
+  if make -k -j$JOBS CC=$CC AR=$AR STRIP=$STRIP CROSS_COMPILE= HOSTCC=gcc EXTRA_CFLAGS="-fPIC -O2" busybox_unstripped > build.log 2>&1; then ok=1; break; fi
+  bad=$(grep -oE '^[a-z_]+/[a-z0-9_/-]+\.c:[0-9]+:[0-9]+: error' build.log | cut -d: -f1 | sort -u)
+  [ -n "$bad" ] || { echo "busybox: link/other failure"; tail -60 build.log; exit 1; }
+  changed=0
+  for f in $bad; do
+    case $f in libbb/*|archival/libarchive/*|shell/*) echo "busybox: core file fails: $f"; grep -A3 "^$f" build.log | head -20; continue;; esac
+    n=$(basename $f .c | tr 'a-z-' 'A-Z_')
+    if grep -q "^CONFIG_$n=y" .config; then sed -i "s/^CONFIG_$n=y/# CONFIG_$n is not set/" .config; echo "busybox round $round: off $n ($f)"; changed=1
+    else echo "busybox: no config for $f"; grep -A3 "^$f" build.log | head -12; fi
+  done
+  [ $changed = 1 ] || { tail -80 build.log; exit 1; }
+  set +o pipefail; yes "" | make oldconfig >/dev/null; set -o pipefail
+done
+[ $ok = 1 ] || { echo "busybox: still failing after 25 rounds"; tail -60 build.log; exit 1; }
+grep -E "^# CONFIG_[A-Z_0-9]+ is not set" .config | wc -l
 bridge
 BIOBJ=$(find . -mindepth 2 -maxdepth 2 -name built-in.o | sort)
 BLIBS=$(find . -name lib.a | sort)
