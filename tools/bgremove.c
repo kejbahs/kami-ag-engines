@@ -5,6 +5,10 @@
  * from the SAME folder as this library (libonnxruntime.so ships in the same pack), model from
  * <pack>/config/u2netp.onnx (or $KAMI_BG_MODEL). Image I/O: stb_image / stb_image_write (public domain).
  * Prints one line «BGREMOVE OK <w>x<h> fg=<percent>%» on success.
+ * v0.6.4 (Kami AG): the phone run crashed at/after CreateEnv with an empty crash.txt (no catchable
+ * signal) — so every ORT call now prints its own stage (the app shows the stage trail, which then
+ * pinpoints the crash), the model is checked BEFORE CreateEnv (a missing model must be a clean error,
+ * never a crash blamed on CreateEnv), and inference is single-threaded.
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
@@ -65,7 +69,7 @@ static int hexrgb(const char *s, unsigned char rgb[3]) {
 }
 
 int main(int argc, char **argv) {
-    const char *in = NULL, *out = NULL, *maskp = NULL; unsigned char bg[3]; int useBg = 0, threads = 2;
+    const char *in = NULL, *out = NULL, *maskp = NULL; unsigned char bg[3]; int useBg = 0, threads = 1;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--mask") && i + 1 < argc) maskp = argv[++i];
         else if (!strcmp(argv[i], "--bg") && i + 1 < argc) { if (!hexrgb(argv[++i], bg)) return fail("bad --bg colour", argv[i]); useBg = 1; }
@@ -97,7 +101,10 @@ int main(int argc, char **argv) {
     ort = getBase()->GetApi(ORT_API_VERSION);
     if (!ort) return fail("ONNX Runtime API version not supported", getBase()->GetVersionString());
 
-    fprintf(stderr, "stage: ONNX Runtime API ok\n");
+    fprintf(stderr, "stage: ONNX Runtime API ok (%s)\n", getBase()->GetVersionString());
+
+    /* v0.6.4: fail fast on a missing model BEFORE touching ORT. */
+    { FILE *mf0 = fopen(model, "rb"); if (!mf0) return fail("model file missing", model); fclose(mf0); }
 
     /* 320x320 bilinear resize + ImageNet normalisation (as rembg does for u2netp) */
     static float input[3 * S * S];
@@ -116,14 +123,16 @@ int main(int argc, char **argv) {
 
     OrtEnv *env; OrtSessionOptions *so; OrtSession *sess; OrtMemoryInfo *mi; OrtValue *tin = NULL, *tout = NULL;
     fprintf(stderr, "stage: CreateEnv\n");
-    if (check(ort->CreateEnv(ORT_LOGGING_LEVEL_ERROR, "bgremove", &env), "CreateEnv")) return 1;
+    if (check(ort->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "bgremove", &env), "CreateEnv")) return 1;
+    fprintf(stderr, "stage: CreateEnv ok\n");
     if (check(ort->CreateSessionOptions(&so), "SessionOptions")) return 1;
-    ort->SetIntraOpNumThreads(so, threads > 0 ? threads : 2);
+    /* v0.6.4: single-threaded — the phone crash happened at/after CreateEnv; one thread is safer
+       on the phone and fast enough for a 320x320 model. */
+    ort->SetIntraOpNumThreads(so, threads > 0 ? threads : 1);
     ort->SetSessionGraphOptimizationLevel(so, ORT_ENABLE_ALL);
-    FILE *mf = fopen(model, "rb");
-    if (!mf) return fail("model file missing", model);
-    fclose(mf);
+    fprintf(stderr, "stage: SessionOptions ok\n");
     if (check(ort->CreateSession(env, model, so, &sess), "load model")) return 1;
+    fprintf(stderr, "stage: load model ok\n");
     OrtAllocator *al; ort->GetAllocatorWithDefaultOptions(&al);
     char *inName, *outName;
     if (check(ort->SessionGetInputName(sess, 0, al, &inName), "input name")) return 1;
@@ -133,6 +142,7 @@ int main(int argc, char **argv) {
     if (check(ort->CreateTensorWithDataAsOrtValue(mi, input, sizeof input, shape, 4, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &tin), "input tensor")) return 1;
     const char *ins[1] = {inName}, *outs[1] = {outName};
     if (check(ort->Run(sess, NULL, ins, (const OrtValue *const *) &tin, 1, outs, 1, &tout), "run model")) return 1;
+    fprintf(stderr, "stage: run ok\n");
     float *pred; if (check(ort->GetTensorMutableData(tout, (void **) &pred), "output data")) return 1;
 
     /* min-max normalise the 320x320 mask, upscale to the photo, write RGBA (or flattened on --bg) */
